@@ -14,6 +14,7 @@
 #include "page_guard.h"
 #include "replacer/lru_replacer.h"
 #include "replacer/replacer.h"
+#include "disk_manager.h"
 
 class DiskManager;
 
