@@ -21,6 +21,18 @@ bool LRUReplacer::victim(frame_id_t* frame_id) {
     //  利用lru_replacer中的LRUlist_,LRUHash_实现LRU策略
     //  选择合适的frame指定为淘汰页面,赋值给*frame_id
 
+    // 1. 判断 LRU 列表是否为空
+    if (this->LRUlist_.empty()) {
+        return false;
+    }
+
+    // 2. 获取并弹出 LRU 列表的尾部 frame_id_t，赋值给 *frame_id
+    *frame_id = this->LRUlist_.back();
+    this->LRUlist_.pop_back();
+
+    // 3. 删除 LRU 哈希表中的记录
+    this->LRUhash_.erase(*frame_id);
+
     return true;
 }
 
@@ -33,6 +45,16 @@ void LRUReplacer::pin(frame_id_t frame_id) {
     // Todo:
     // 固定指定id的frame
     // 在数据结构中移除该frame
+
+    // 0. 检查 frame_id 是否不存在于 LRU 哈希表
+    auto frame_it = this->LRUhash_.find(frame_id);
+    if (frame_it == this->LRUhash_.end()) {
+        return;
+    }
+
+    // 1. 在 LRU 哈希表和列表中删除该 frame
+    this->LRUlist_.erase(frame_it->second);
+    this->LRUhash_.erase(frame_id);
 }
 
 /**
@@ -43,9 +65,31 @@ void LRUReplacer::unpin(frame_id_t frame_id) {
     // Todo:
     //  支持并发锁
     //  选择一个frame取消固定
+
+    // 并发锁
+    std::scoped_lock lock{latch_};
+
+    // 0. 检查 frame_id 是否存在于 LRU 哈希表
+    if (this->LRUhash_.find(frame_id) != this->LRUhash_.end()) {
+        return;
+    }
+
+    if (this->LRUlist_.size() >= max_size_) return;
+
+    // 1. 插入在 LRU 链表的头部
+    auto frame_it = this->LRUlist_.insert(this->LRUlist_.begin(), frame_id);
+
+    // 2. 在 LRU 哈希表中创建一个记录
+    this->LRUhash_[frame_id] = frame_it;
 }
 
 /**
  * @description: 获取当前replacer中可以被淘汰的页面数量
  */
-size_t LRUReplacer::Size() { return LRUlist_.size(); }
+size_t LRUReplacer::Size() {
+
+    // 并发锁
+    std::scoped_lock lock{latch_};
+
+    return LRUlist_.size(); 
+}
