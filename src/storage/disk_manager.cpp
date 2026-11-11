@@ -6,6 +6,7 @@
 #include <assert.h>    // for assert
 #include <sys/stat.h>  // for stat
 #include <unistd.h>    // for lseek
+#include <fcntl.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -31,6 +32,17 @@ void DiskManager::write_page(int fd, page_id_t page_no, const char* offset, int 
     // 1.lseek()定位到文件头，通过(fd,page_no)可以定位指定页面及其在磁盘文件中的偏移量
     // 2.调用write()函数
     // 注意write返回值与num_bytes不等时 throw InternalError("DiskManager::write_page Error");
+
+    // 1. 定位到指定页面
+    if (lseek(fd, page_no * PAGE_SIZE, SEEK_SET) == -1) {
+        throw InternalError("DiskManager::write_page Error");
+    }
+
+    // 2. 调用 write 进行写入
+    ssize_t written_bytes = write(fd, offset, num_bytes);
+    if (written_bytes != (ssize_t)num_bytes) {
+        throw InternalError("DiskManager::write_page Error");
+    }
 }
 
 /**
@@ -45,6 +57,17 @@ void DiskManager::read_page(int fd, page_id_t page_no, char* offset, int num_byt
     // 1.lseek()定位到文件头，通过(fd,page_no)可以定位指定页面及其在磁盘文件中的偏移量
     // 2.调用read()函数
     // 注意read返回值与num_bytes不等时，throw InternalError("DiskManager::read_page Error");
+
+    // 1. 定位到指定页面
+    if (lseek(fd, page_no * PAGE_SIZE, SEEK_SET) == -1) {
+        throw InternalError("DiskManager::write_page Error");
+    }
+
+    // 2. 调用 read 进行读取
+    ssize_t read_bytes = read(fd, offset, num_bytes);
+    if (read_bytes != (ssize_t)num_bytes) {
+        throw InternalError("DiskManager::read_page Error");
+    }
 }
 
 /**
@@ -107,6 +130,27 @@ void DiskManager::create_file(const std::string& path) {
     // Todo:
     // 调用open()函数，使用O_CREAT模式
     // 注意不能重复创建相同文件
+
+    // 1. 调用 is_file 来判断文件是否已经存在
+    if (is_file(path)) {
+        throw FileExistsError(path);
+        return;
+    }
+
+    // 2. 调用 open 函数
+    // question: 文件权限如何指定，这里先用 0644
+    int fd = open(path.c_str(), O_CREAT, 0644);
+
+    // open 失败时：返回 -1，并且会将全局变量 errno 设置为对应的错误代码（如 EEXIST、EACCES 等）。
+    if (fd == -1) {
+        // strerror(errno)：把错误码翻译成文字，返回一个 const char* 类型的错误描述字符串
+        // errno 是 C/C++ 标准库中的一个全局整数变量，专门用来记录最近一次系统调用或库函数失败时的错误代码
+        throw InternalError("failed to create file: " + path + ", error: " + std::string(strerror(errno)));
+    }
+
+    // 3. 调用 close 关闭文件，只是"创建文件"的职责，不需要读写，立刻关闭 fd 释放资源
+    close(fd);
+
 }
 
 /**
@@ -117,6 +161,20 @@ void DiskManager::destroy_file(const std::string& path) {
     // Todo:
     // 调用unlink()函数
     // 注意不能删除未关闭的文件
+
+    // 0. 判断文件是否存在
+    if (!is_file(path)) {
+        throw FileNotFoundError(path);
+    }
+
+    // 1. 如果文件未关闭，抛出异常
+    if (path2fd_.find(path) != path2fd_.end()) {
+        throw FileNotClosedError(path);
+    }
+
+    // 2. 调用 unlink 删除文件
+    // unlink() 函数核心作用：删除目录项，即解除文件名与 inode 之间的映射关系。
+    unlink(path.c_str());
 }
 
 /**
@@ -128,7 +186,28 @@ int DiskManager::open_file(const std::string& path) {
     // Todo:
     // 调用open()函数，使用O_RDWR模式
     // 注意不能重复打开相同文件，并且需要更新文件打开列表
-    return -1;
+
+    // 0. 判断文件是否存在
+    if (!is_file(path)) {
+        throw FileNotFoundError(path);
+    }
+
+    // 1. 如果文件已打开，直接返回已打开的文件句柄
+    if (path2fd_.find(path) != path2fd_.end()) {
+        return path2fd_[path];
+    }
+    
+    // 2. 调用 open 打开文件
+    int fd = open(path.c_str(), O_RDWR);
+    if (fd == -1) {
+        throw InternalError("failed to open file: " + path + ", error: " + std::string(strerror(errno)));
+    }
+
+    // 3. 更新打开文件列表
+    path2fd_[path] = fd;
+    fd2path_[fd] = path;
+
+    return fd;
 }
 
 /**
@@ -139,6 +218,22 @@ void DiskManager::close_file(int fd) {
     // Todo:
     // 调用close()函数
     // 注意不能关闭未打开的文件，并且需要更新文件打开列表
+
+    // 1. 判断文件是否打开
+    if (fd2path_.find(fd) == fd2path_.end()) {
+        throw FileNotOpenError(fd);
+    }
+
+    std::string path = fd2path_[fd];
+
+    // 2. 调用 close 来关闭文件
+    if (close(fd) == -1) {
+        throw InternalError("failed to close file: " + path + ", error: " + std::string(strerror(errno)));
+    }
+
+    // 3. 更新文件打开列表
+    path2fd_.erase(path);
+    fd2path_.erase(fd);
 }
 
 /**
